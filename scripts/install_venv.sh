@@ -4,6 +4,13 @@ set -e
 venv_path=$1
 [ -z "${venv_path}" ] && venv_path=venv
 
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --pythainer_from_src) pythainer_from_src=true; shift ;;
+        *) venv_path=$1; shift ;;
+    esac
+done
+
 script_dir=$(dirname "$(readlink -f "$0")")
 
 # dependencies: ${pythonex} ${pythonex}-venv ${pythonex}-dev
@@ -51,6 +58,22 @@ then
   ${pip_exec} install --upgrade --requirement "${requirement_file}"
 else
   echo "No requirement file found, proceeding without installing any package." >&2
+fi
+
+if [ "$pythainer_from_src" = true ]; then
+    . ${venv_path}/bin/activate
+    if [ ! -d "deps" ]; then
+        mkdir deps
+    fi
+    cd deps
+    if [ ! -d "pythainer" ]; then
+        git clone git@github.com:apaolillo/pythainer.git
+    else
+        echo "pythainer directory already exists, skipping clone."
+    fi
+    pip3 install ./pythainer
+    cd ..
+    deactivate
 fi
 
 "${python_exec}" "${script_dir}/add_paths_venv.py" ${venv_path}
