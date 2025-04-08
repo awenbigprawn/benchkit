@@ -195,6 +195,17 @@ def get_cppdemo_builder(
     )
     docker_builder.space()
 
+    docker_builder.root()
+    docker_builder.desc("Remove annoying motd")
+    docker_builder.run(
+        command=(
+            r"find /opt/nvidia/entrypoint.d/ "
+            r'\( -name "*.txt" -o -name "10-banner.sh" -o -name "12-banner.sh" \) '
+            r"-exec rm {} +"
+        )
+    )
+    docker_builder.space()
+
     docker_builder.user()
     docker_builder.workdir(path=work_dir)
 
