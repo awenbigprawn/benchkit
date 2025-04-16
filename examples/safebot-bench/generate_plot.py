@@ -17,10 +17,12 @@ def generate_barplot_from_json_file(json_file_path: PathType, output_dir: PathTy
         json_data = json.load(file)
 
     df = pd.DataFrame(json_data)
+    generate_barplot_from_dataframe(df=df, output_dir=output_dir)
 
+def generate_barplot_from_dataframe(df: pd.DataFrame, output_dir: PathType = "/tmp/figs") -> None:
     camera_num = 0
     camera_name_list = []
-    for col in json_data[0].keys():
+    for col in df.columns:
         if col.startswith('camera'):
             parts = col.split('_')
             if len(parts) > 1 and parts[0] not in camera_name_list:
@@ -121,7 +123,7 @@ def generate_barplot_from_json_file(json_file_path: PathType, output_dir: PathTy
 
     # Add bars for other modules
     num_bars_per_camera = len(camera_relate_module_strings)
-    positions = [camera_num -1 + i for i in range(len(other_module_strings))]
+    positions = [num_bars_per_camera + i for i in range(len(other_module_strings))]
 
     for idx, pos in enumerate(positions):
         module_row = other_stats_df.iloc[idx]
