@@ -5,14 +5,15 @@ import pathlib
 from pathlib import Path
 import re
 from typing import Any, Dict, Iterable, List, SupportsIndex
+import pandas as pd
 import numpy as np
 
 from pythainer.examples.runners import camera_runner, gui_runner, personal_runner, gpu_runner
 from pythainer.runners import ConcreteDockerRunner, DockerRunner
 from deps.cpp.docker.cppdemo_container import get_cppdemo_builder
-from generate_plot import generate_barplot_from_json_file
+from generate_plot import generate_barplot_from_dataframe
 
-from benchkit.benchmark import Benchmark, CommandAttachment, PostRunHook, PreRunHook
+from benchkit.benchmark import Benchmark, CommandAttachment, PostRunHook, PreRunHook, RecordResult, WriteRecordFileFunction
 from benchkit.campaign import CampaignCartesianProduct
 from benchkit.commandwrappers import CommandWrapper
 from benchkit.commandwrappers.perf import PerfStatWrap
@@ -24,9 +25,9 @@ from benchkit.utils.dir import caller_dir
 from benchkit.utils.types import PathType
 
 DOCKER = True
-NB_RUNS = 1
+NB_RUNS = 3
 NUM_CAMERAS = 5
-DURATION_DEMO = 10
+DURATION_DEMO = 20
 RECORD_ALL_TIME = False
 
 def edit_output(exec_times, print_name):
@@ -242,6 +243,19 @@ def get_docker_platform(
 
     return platform
 
+def post_run_hook_barplot(
+    experiment_results_lines: List[RecordResult],
+    record_data_dir: PathType,
+    write_record_file_fun: WriteRecordFileFunction,
+):
+    # -> RecordResult:
+    """
+    Post run hook to collect memory allocation from valgrind output.
+    """
+    print(experiment_results_lines)
+    df = pd.DataFrame(experiment_results_lines)
+    generate_barplot_from_dataframe(df=df, output_dir=record_data_dir/"figs")
+    # return results
 
 def main() -> None:
     command_wrappers = []
@@ -262,6 +276,7 @@ def main() -> None:
         src_dir=docker_cppdemo_path,
         command_wrappers=command_wrappers,
         platform=platform,
+        post_run_hooks=[post_run_hook_barplot],
     )
 
     campaign = CampaignCartesianProduct(
@@ -277,10 +292,6 @@ def main() -> None:
     )
     campaign.run()
     print(campaign.base_data_dir())
-
-    results_dir = Path(__file__).resolve().parent.resolve() / "results"
-    generate_barplot_from_json_file(search_dir=results_dir, target_pattern="experiment_results.json")
-
 
 if __name__ == "__main__":
     main()
