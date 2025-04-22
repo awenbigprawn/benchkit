@@ -2,16 +2,23 @@
 # SPDX-License-Identifier: MIT
 
 import pathlib
+from imp import source_from_cache
 from pathlib import Path
 import re
+import glob, os, shutil
 from typing import Any, Dict, Iterable, List, SupportsIndex
 import pandas as pd
-import numpy as np
+
 
 from pythainer.examples.runners import camera_runner, gui_runner, personal_runner, gpu_runner
 from pythainer.runners import ConcreteDockerRunner, DockerRunner
 from deps.cpp.docker.cppdemo_container import get_cppdemo_builder
-from generate_plot import generate_barplot_from_dataframe
+from generate_plot import generate_dataframe_from_csv_file, generate_barplot_from_dataframe
+from analyse_benchmark_data import (read_and_clean_data,
+                                    calculate_pipeline_runtimes,
+                                    calculate_statistical_measures,
+                                    process_of_data,
+                                    generate_boxplots_all_cams2)
 
 from benchkit.benchmark import Benchmark, CommandAttachment, PostRunHook, PreRunHook, RecordResult, WriteRecordFileFunction
 from benchkit.campaign import CampaignCartesianProduct
@@ -25,41 +32,21 @@ from benchkit.utils.dir import caller_dir
 from benchkit.utils.types import PathType
 
 DOCKER = True
-NB_RUNS = 3
-NUM_CAMERAS = 5
-DURATION_DEMO = 20
+NB_RUNS = 1
+NUM_CAMERAS:SupportsIndex = 5
+NUM_CPUS = 20
+DURATION_DEMO = 30
 RECORD_ALL_TIME = False
+OLD_EXEC_TIME_ONLY = False
 
-def edit_output(exec_times, print_name):
-    if exec_times:
-        average = np.sum(exec_times) / len(exec_times)
-        maximum = np.max(exec_times)
-        minimum = np.min(exec_times)
-        std_div = np.std(exec_times)
-        median = np.median(exec_times)
-    else:
-        average = 0
-        maximum = 0
-        minimum = 0
-        std_div = 0
-        median = 0
-
-    if not print_name:
-        print(f"warning: {print_name} is empty")
-
-    return {
-        f"{print_name}_avg": float(average),
-        f"{print_name}_max": float(maximum),
-        f"{print_name}_min": float(minimum),
-        f"{print_name}_std": float(std_div),
-        f"{print_name}_med": float(median),
-    }
+docker_cpp_folder_path = "/home/user/workspace/cppdemo"
 
 
 class SafebotBench(Benchmark):
     def __init__(
         self,
         src_dir: PathType,
+        host_cppdemo_dir: PathType,
         command_wrappers: Iterable[CommandWrapper] = (),
         command_attachments: Iterable[CommandAttachment] = (),
         shared_libs: Iterable[SharedLib] = (),
@@ -81,26 +68,39 @@ class SafebotBench(Benchmark):
         # Use pass as a placeholder if method's body is not yet implemented
         self._src_dir = src_dir
         print(src_dir)
+        self._host_cppdemo_dir = host_cppdemo_dir
         self._bench_src_path = pathlib.Path(src_dir)
 
     def prebuild_bench(self, **kwargs):
-        make_command = ["./build.sh", "--gpu"]
-        self.platform.comm.shell(command=make_command, current_dir=self._src_dir)
         pass
 
     def build_bench(self, **kwargs) -> None:
-        pass
+        make_command = ["./build.sh", "--gpu"]
+        self.platform.comm.shell(command=make_command, current_dir=self._src_dir)
+
+        with_sched_ddl = kwargs.get("with_sched_ddl", False)
+
+        if with_sched_ddl:
+            setcap_command = ["sudo", "setcap", "cap_sys_nice+ep", "./multicam_separate_pipeline"]
+            self.platform.comm.shell(command=setcap_command, current_dir=self._src_dir / "build-gpu")
 
     def single_run(
         self,
         duration_seconds: int = DURATION_DEMO,
+        num_cameras: int = NUM_CAMERAS,
+        synth_workers: int = 0,
+        num_cpus: int = NUM_CPUS,
+        # record_data_dir: PathType,
+        # write_record_file_fun: WriteRecordFileFunction,
         **kwargs,
     ) -> str:
         environment = self._preload_env(duration_seconds=duration_seconds, **kwargs)
         run_command = [
-            # "./home_position",
+            "taskset","-c",f"0-{num_cpus-1}",
             "./multicam_separate_pipeline",
-            f"{duration_seconds}",
+            f"--runtime={duration_seconds}",
+            f"--cameranum={num_cameras}",
+            f"--synthworker={synth_workers}"
         ]
         wrapped_run_command, wrapped_environment = self._wrap_command(
             run_command=run_command,
@@ -123,75 +123,69 @@ class SafebotBench(Benchmark):
         self,
         command_output: str,
         build_variables: Dict[str, Any],
-        # run_variables: Dict[str, Any],
+        run_variables: Dict[str, Any],
         benchmark_duration_seconds: int,
         record_data_dir: PathType,
         **kwargs,
     ):
         output = {}
-        camera_relate_module_strings = [
-            "idle_waitframe",
-            "preprocess_frame",
-            "human_detect",
-            "bufferwrite",
-        ]
-        other_module_strings = [
-            "set_ssm_speed",
-        ]
-        statistic_strings = [
-            "avg",
-            "min",
-            "max",
-            "num"
-        ]
+        matches_cpp_output_path = re.findall(
+            rf"Output path: (.*?)\n", command_output)
 
-        if RECORD_ALL_TIME:
-            for camera_module in camera_relate_module_strings:
-                for camera_i in range(NUM_CAMERAS):
-                    matches_exec_time = re.findall(
-                        rf"camera_{camera_i}_loop_(\d+)_{camera_module} takes: (\d+)", command_output)
-                    if not matches_exec_time:
-                        continue
-                    loop_times = [int(item[0]) for item in matches_exec_time]
-                    exec_times = [int(item[1]) for item in matches_exec_time]
-                    if loop_times[-1] != len(exec_times):
-                        print(f"warning: camera_{camera_i}_{camera_module}: exec_times[-1] = {loop_times[-1]} != {len(exec_times)} = len(exec_times) ")
-                    output.update(edit_output(exec_times, f"camera_{camera_i}_{camera_module}"))
-            for module in other_module_strings:
-                matches_exec_time = re.findall(
-                    rf"{module} takes: (\d+)", command_output)
-                if not matches_exec_time:
-                    continue
-                exec_times = [int(item) for item in matches_exec_time]
-                output.update(edit_output(exec_times, module))
-        else:
-            for camera_module in camera_relate_module_strings:
-                for camera_i in range(NUM_CAMERAS):
-                    for statistic_string in statistic_strings:
-                        matches_exec_time = re.findall(
-                        rf"camera{camera_i}_{camera_module}_{statistic_string}=(\d+)", command_output)
-                        if not matches_exec_time:
-                            continue
-                        output.update(
-                            {f"camera{camera_i}_{camera_module}_{statistic_string}": float(matches_exec_time[0])}
-                        )
-            for module in other_module_strings:
-                for statistic_string in statistic_strings:
-                    matches_exec_time = re.findall(
-                    rf"{module}_{statistic_string}=(\d+)", command_output)
-                    if not matches_exec_time:
-                        continue
+        #if matches_cpp_output_path is not empty
+        if matches_cpp_output_path:
+            docker_cpp_output_path = str(matches_cpp_output_path[0])
+            docker_prefix = self._src_dir
+            benchkit_prefix = self._host_cppdemo_dir.resolve()
+
+            benchkit_cpp_output_path = docker_cpp_output_path.replace(str(docker_prefix), str(benchkit_prefix), 1)
+            print(benchkit_cpp_output_path)
+            # copy all csv files generated by cpp demo to record_data_dir
+            csv_files = glob.glob(os.path.join(benchkit_cpp_output_path, '*.csv'))
+            target_record_data_file = record_data_dir / 'result.csv'
+            if csv_files:
+                source_file = csv_files[0]
+                shutil.copy(source_file, target_record_data_file)
+
+            process_of_data(target_record_data_file)
+
+            df = pd.read_csv(record_data_dir/'all_stats.csv', sep=",")
+            types = [
+                "ssm_total",
+                "perception_iteration_from_noidle_till_writebuffer"
+            ]
+            box_plot = generate_boxplots_all_cams2(df, types_of_interest=types, save_path=record_data_dir/'perception-ssm-statistic.png')
+
+            benchkit_output_types = [
+                "pipeline_runtime",
+                "pipeline_wait_in_buffer",
+                "perception_iteration_from_noidle_till_writebuffer",
+                "ssm_total",
+            ]
+            benchkit_output_statistics = [
+                "num",
+                "min",
+                "max",
+                "avg",
+            ]
+            for type in benchkit_output_types:
+                for statistic in benchkit_output_statistics:
                     output.update(
-                        {f"{module}_{statistic_string}": float(matches_exec_time[0])}
+                        {f"{type}_{statistic}": float(min(df.loc[df['type'] == type, statistic]))}
                     )
         return output
 
     def get_build_var_names(self) -> List[str]:
-        return []
+        return [
+            "with_sched_ddl",
+        ]
 
     def get_run_var_names(self) -> List[str]:
         return [
+            "num_cpus",
             "duration_seconds",
+            "num_cameras",
+            "synth_workers",
         ]
 
     @property
@@ -248,14 +242,9 @@ def post_run_hook_barplot(
     record_data_dir: PathType,
     write_record_file_fun: WriteRecordFileFunction,
 ):
-    # -> RecordResult:
-    """
-    Post run hook to collect memory allocation from valgrind output.
-    """
     print(experiment_results_lines)
     df = pd.DataFrame(experiment_results_lines)
-    generate_barplot_from_dataframe(df=df, output_dir=record_data_dir/"figs")
-    # return results
+    # generate_barplot_from_dataframe(df=df, output_dir=record_data_dir/"figs")
 
 def main() -> None:
     command_wrappers = []
@@ -274,6 +263,7 @@ def main() -> None:
 
     safebot_benchmark = SafebotBench(
         src_dir=docker_cppdemo_path,
+        host_cppdemo_dir=host_cppdemo_dir,
         command_wrappers=command_wrappers,
         platform=platform,
         post_run_hooks=[post_run_hook_barplot],
@@ -283,7 +273,13 @@ def main() -> None:
         name="safebot_campaign",
         benchmark=safebot_benchmark,
         nb_runs=NB_RUNS,
-        variables={},
+        variables={
+            "num_cpus" : [8],
+            "with_sched_ddl" : [False, True],
+            "num_cameras" : [1],
+            "synth_workers": [0,1,2,4,8], #,1,5,10,20],
+            "runtime": [30],
+        },
         constants=None,
         debug=False,
         gdb=False,

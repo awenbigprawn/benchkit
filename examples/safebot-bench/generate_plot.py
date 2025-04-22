@@ -4,13 +4,102 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import json
 import os
+import re
 import pathlib
 from pathlib import Path
 from benchkit.utils.types import PathType
+import numpy as np
+
+def edit_output(exec_times, print_name):
+    if exec_times:
+        average = np.sum(exec_times) / len(exec_times)
+        maximum = np.max(exec_times)
+        minimum = np.min(exec_times)
+        std_div = np.std(exec_times)
+        median = np.median(exec_times)
+    else:
+        average = 0
+        maximum = 0
+        minimum = 0
+        std_div = 0
+        median = 0
+
+    if not print_name:
+        print(f"warning: {print_name} is empty")
+
+    return {
+        f"{print_name}_avg": float(average),
+        f"{print_name}_max": float(maximum),
+        f"{print_name}_min": float(minimum),
+        f"{print_name}_std": float(std_div),
+        f"{print_name}_med": float(median),
+    }
+def old_time_analysis_from_terminal(command_output, NUM_CAMERAS, RECORD_ALL_TIME):
+    output = {}
+    camera_relate_module_strings = [
+        "idle_waitframe",
+        "preprocess_frame",
+        "human_detect",
+        "bufferwrite",
+    ]
+    other_module_strings = [
+        "set_ssm_speed",
+    ]
+    statistic_strings = [
+        "avg",
+        "min",
+        "max",
+        "num"
+    ]
+    if RECORD_ALL_TIME:
+        for camera_module in camera_relate_module_strings:
+            for camera_i in range(NUM_CAMERAS):
+                matches_exec_time = re.findall(
+                    rf"camera_{camera_i}_loop_(\d+)_{camera_module} takes: (\d+)", command_output)
+                if not matches_exec_time:
+                    continue
+                loop_times = [int(item[0]) for item in matches_exec_time]
+                exec_times = [int(item[1]) for item in matches_exec_time]
+                if loop_times[-1] != len(exec_times):
+                    print(
+                        f"warning: camera_{camera_i}_{camera_module}: exec_times[-1] = {loop_times[-1]} != {len(exec_times)} = len(exec_times) ")
+                output.update(edit_output(exec_times, f"camera_{camera_i}_{camera_module}"))
+        for module in other_module_strings:
+            matches_exec_time = re.findall(
+                rf"{module} takes: (\d+)", command_output)
+            if not matches_exec_time:
+                continue
+            exec_times = [int(item) for item in matches_exec_time]
+            output.update(edit_output(exec_times, module))
+    else:
+        for camera_module in camera_relate_module_strings:
+            for camera_i in range(NUM_CAMERAS):
+                for statistic_string in statistic_strings:
+                    matches_exec_time = re.findall(
+                        rf"camera{camera_i}_{camera_module}_{statistic_string}=(\d+)", command_output)
+                    if not matches_exec_time:
+                        continue
+                    output.update(
+                        {f"camera{camera_i}_{camera_module}_{statistic_string}": float(matches_exec_time[0])}
+                    )
+        for module in other_module_strings:
+            for statistic_string in statistic_strings:
+                matches_exec_time = re.findall(
+                    rf"{module}_{statistic_string}=(\d+)", command_output)
+                if not matches_exec_time:
+                    continue
+                output.update(
+                    {f"{module}_{statistic_string}": float(matches_exec_time[0])}
+                )
+    return output
 
 def _generate_timestamp() -> str:
     result = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y%m%d-%H%M%S")
     return result
+
+def generate_dataframe_from_csv_file(csv_file_path: PathType) -> pd.DataFrame:
+    df = pd.read_csv(csv_file_path)
+    return df
 
 def generate_barplot_from_json_file(json_file_path: PathType, output_dir: PathType = "/tmp/figs") -> None:
     with open(json_file_path, 'r') as file:
@@ -174,6 +263,3 @@ if __name__ == "__main__":
     base_dir = Path(__file__).resolve().parent.resolve()
     results_dir = base_dir / "results/benchmark_SAFEBOT_cppdemo_safebot_campaign_20250412_200506_721668/run-1"
     generate_plots_for_all_results(search_dir=results_dir, target_pattern="experiment_results.json")
-
-
-
