@@ -35,7 +35,7 @@ DOCKER = True
 NB_RUNS = 1
 NUM_CAMERAS:SupportsIndex = 5
 NUM_CPUS = 20
-DURATION_DEMO = 30
+DURATION_DEMO = 60
 RECORD_ALL_TIME = False
 OLD_EXEC_TIME_ONLY = False
 
@@ -83,22 +83,25 @@ class SafebotBench(Benchmark):
         if with_sched_ddl:
             setcap_command = ["sudo", "setcap", "cap_sys_nice+ep", "./multicam_separate_pipeline"]
             self.platform.comm.shell(command=setcap_command, current_dir=self._src_dir / "build-gpu")
+        else :
+            setcap_command = ["./clearcap.sh"]
+            self.platform.comm.shell(command=setcap_command, current_dir=self._src_dir)
 
     def single_run(
         self,
-        duration_seconds: int = DURATION_DEMO,
+        runtime: int = DURATION_DEMO,
         num_cameras: int = NUM_CAMERAS,
         synth_workers: int = 0,
-        num_cpus: int = NUM_CPUS,
+        # num_cpus: int = NUM_CPUS,
         # record_data_dir: PathType,
         # write_record_file_fun: WriteRecordFileFunction,
         **kwargs,
     ) -> str:
-        environment = self._preload_env(duration_seconds=duration_seconds, **kwargs)
+        environment = self._preload_env(**kwargs)
         run_command = [
-            "taskset","-c",f"0-{num_cpus-1}",
+            # "taskset","-c",f"0-{num_cpus-1}",
             "./multicam_separate_pipeline",
-            f"--runtime={duration_seconds}",
+            f"--runtime={runtime}",
             f"--cameranum={num_cameras}",
             f"--synthworker={synth_workers}"
         ]
@@ -131,6 +134,19 @@ class SafebotBench(Benchmark):
         output = {}
         matches_cpp_output_path = re.findall(
             rf"Output path: (.*?)\n", command_output)
+        matches_sched_policy = re.findall(
+            rf"Current scheduling policy: (.*?)\n", command_output)
+        if matches_sched_policy:
+            # if build_variables["with_sched_ddl"] and matches_sched_policy[0] == "SCHED_DEADLINE":
+            #     pass
+            # elif not build_variables["with_sched_ddl"] and matches_sched_policy[0] == "SCHED_OTHER":
+            #     pass
+            # else:
+            #     print("Scheduling policy mismatch!")
+            #     print(f"Build with sched_ddl: {build_variables['with_sched_ddl']}")
+            #     print(f"Current scheduling policy: {matches_sched_policy[0]}")
+            #     exit(1)
+            print(f"Current scheduling policy: {matches_sched_policy[0]} * {len(matches_sched_policy)}")
 
         #if matches_cpp_output_path is not empty
         if matches_cpp_output_path:
@@ -182,8 +198,8 @@ class SafebotBench(Benchmark):
 
     def get_run_var_names(self) -> List[str]:
         return [
-            "num_cpus",
-            "duration_seconds",
+            # "num_cpus",
+            "runtime",
             "num_cameras",
             "synth_workers",
         ]
@@ -274,11 +290,11 @@ def main() -> None:
         benchmark=safebot_benchmark,
         nb_runs=NB_RUNS,
         variables={
-            "num_cpus" : [8],
-            "with_sched_ddl" : [False, True],
-            "num_cameras" : [1],
-            "synth_workers": [0,1,2,4,8], #,1,5,10,20],
-            "runtime": [30],
+            # "num_cpus" : [8],
+            "with_sched_ddl" : [True, False],
+            "num_cameras" : [5],
+            "synth_workers": [4], #,1,5,10,20],
+            "runtime": [DURATION_DEMO],
         },
         constants=None,
         debug=False,
